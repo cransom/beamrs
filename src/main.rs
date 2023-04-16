@@ -1,8 +1,9 @@
 use image::codecs::gif::GifDecoder;
 use image::AnimationDecoder;
 use image::DynamicImage;
-use image::imageops::Lanczos3;
+use image::imageops::Nearest;
 use colored::*;
+use std::net::{SocketAddr,ToSocketAddrs};
 
 
 use std::{thread, time};
@@ -15,16 +16,18 @@ use clap::Parser;
 #[command(author, version, about, long_about = None)]
 struct Args {
     /// Host
-    #[arg(short,long)]
-    target: String,
+    #[arg(long)]
+    host: String,
+    #[arg(long, default_value_t = 21324)]
+    port: u16,
 
-    #[arg(short,long, default_value_t = 0)]
+    #[arg(long, default_value_t = 0)]
     loops: u32,
 
-    #[arg(short,long, default_value_t = 2)]
+    #[arg(long, default_value_t = 2)]
     remain: u8,
 
-    #[arg(short,long)]
+    #[arg(long)]
     file: String,
 
     #[arg(long, default_value_t = 0)]
@@ -46,8 +49,6 @@ fn main() {
     // cli args
     let args = Args::parse();
 
-    println!("{:?}", args);
-
     // file setup
     // check for file
     let img = match File::open(&args.file) {
@@ -55,7 +56,10 @@ fn main() {
         Err(_) => panic!("Couldn't open {}.", args.file)
     };
 
+    let socket = UdpSocket::bind("0.0.0.0:0").expect("couldn't bind a socket");
+    socket.set_broadcast(true) .expect("couldn't set flag to allow broadcasts");
 
+    let wled_target = format!("{}:{}", args.host,args.port).to_socket_addrs().unwrap().next().expect("Couldn't find that name.");
 
     let decoder = GifDecoder::new(img).unwrap();
     let mut loop_count: u32 = args.loops;
@@ -75,7 +79,7 @@ fn main() {
             let _height;
             let mut frame = DynamicImage::ImageRgba8(raw_frame.buffer() .clone());
             if args.width > 0 && args.height > 0 {
-                frame = frame.resize_exact(args.width, args.height, Lanczos3 );
+                frame = frame.resize_exact(args.width, args.height, Nearest );
                 width = args.width;
                 _height = args.height;
             } else {
@@ -86,18 +90,21 @@ fn main() {
             let (numer, denom) = raw_frame.delay().numer_denom_ms();
             let mut pixel_sequence: Vec<u8> = vec![];
 
-            print!("{esc}[2J{esc}[1;1H", esc = 27 as char);
+            if args.verbose {
+                // clear and reset to 1:1
+                print!("{esc}[2J{esc}[1;1H", esc = 27 as char);
+            }
 
             for (x, _y, pixel) in frame.to_rgb8().enumerate_pixels() {
                 pixel_sequence.extend_from_slice( &[ pixel[0], pixel[1], pixel[2] ]);
                 if args.verbose {
-                    print!("{}", "#".truecolor(pixel[0], pixel[1], pixel[2]));
+                    print!("{}", "⏹".truecolor(pixel[0], pixel[1], pixel[2]));
                     if x == width-1 {
                         println!("");
                     }
                 }
             }
-            send_wled(&mut pixel_sequence, &args.target, args.remain);
+            send_wled(&mut pixel_sequence, &wled_target, &socket,  args.remain);
             thread::sleep(time::Duration::from_millis(numer as u64 / denom as u64 ));
         }
         match loop_count {
@@ -105,23 +112,17 @@ fn main() {
             1 => break,
             _ => loop_count -= 1
         };
-
-
     }
-
-
 }
 
-fn send_wled(seq: &mut Vec<u8>, host: &String, timeout: u8) {
+fn send_wled(seq: &mut Vec<u8>, wled_target: &SocketAddr, socket: &UdpSocket, timeout: u8) {
     // if < 490, drgb = 2. if more, dnrgb
     //drgb
     seq.insert(0,2);
     // timeout
     seq.insert(1,timeout);
 
-    let socket = UdpSocket::bind("0.0.0.0:0").expect("couldn't bind a socket");
-    socket.set_broadcast(true).expect("couldn't set flag to allow broadcasts");
-    socket.send_to(&seq, host).expect("failed to send");
+    socket.send_to(&seq, wled_target).expect("failed to send");
 
 
 }
